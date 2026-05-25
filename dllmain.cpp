@@ -3,6 +3,9 @@
 #include <thread>
 #include <chrono>
 #include <cmath>
+#include <d3d11.h>
+
+#pragma comment(lib, "d3d11.lib")
 
 // --- CS2 DUMPER VERİLERİ (24 MAYIS 2026) ---
 namespace Offsets {
@@ -18,16 +21,10 @@ namespace ClientDll {
     constexpr std::ptrdiff_t m_pGameSceneNode = 0x308;
 }
 
-// Matematik Yapıları
-struct Vector3 {
-    float x, y, z;
-};
+struct Vector3 { float x, y, z; };
+struct ViewMatrix { float matrix[4][4]; };
 
-struct ViewMatrix {
-    float matrix[4][4];
-};
-
-// 3D Harita Koordinatını 2D Ekrana Çevirme (World To Screen)
+// Basit Çizim İçin GDI Yedek Döngüsü (Hafifletilmiş ve Güvenli Hale Getirilmiş)
 bool WorldToScreen(Vector3 pos, Vector3& screen, ViewMatrix matrix, int width, int height) {
     float _x = matrix.matrix[0][0] * pos.x + matrix.matrix[0][1] * pos.y + matrix.matrix[0][2] * pos.z + matrix.matrix[0][3];
     float _y = matrix.matrix[1][0] * pos.x + matrix.matrix[1][1] * pos.y + matrix.matrix[1][2] * pos.z + matrix.matrix[1][3];
@@ -50,9 +47,9 @@ bool WorldToScreen(Vector3 pos, Vector3& screen, ViewMatrix matrix, int width, i
     return true;
 }
 
-// GDI Kutu Çizim Fonksiyonu
 void DrawBorderBox(HDC hdc, int x, int y, int w, int h, int thickness, COLORREF color) {
     HBRUSH brush = CreateSolidBrush(color);
+    if (!brush) return;
     RECT rectTop = { x, y, x + w, y + thickness };
     FillRect(hdc, &rectTop, brush);
     RECT rectLeft = { x, y, x + thickness, y + h };
@@ -64,83 +61,92 @@ void DrawBorderBox(HDC hdc, int x, int y, int w, int h, int thickness, COLORREF 
     DeleteObject(brush);
 }
 
-// Ana Hile Fonksiyonu
-void CheatThread(HMODULE hModule) {
-    // Bilgilendirme Konsolu Açalım
+void CheatLoop(HMODULE hModule) {
     AllocConsole();
     FILE* f;
     freopen_s(&f, "CONOUT$", "w", stdout);
-    std::cout << "[Axion] Internal ESP Yuklendi!" << std::endl;
-    std::cout << "[Axion] Kapatmak icin hile icindeyken END tusuna basin." << std::endl;
+    std::cout << "[Axion] Kararli Internal ESP Baslatildi!" << std::endl;
 
     uintptr_t clientModule = (uintptr_t)GetModuleHandleA("client.dll");
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    HDC hdc = GetDC(NULL);
-
+    
+    // Güvenli pencere DC'si alma (Masaüstü yerine doğrudan aktif oyunu hedef alır)
+    HWND gameWindow = FindWindowA("SDL_app", "Counter-Strike 2");
+    
     while (!GetAsyncKeyState(VK_END)) {
         if (!clientModule) {
             clientModule = (uintptr_t)GetModuleHandleA("client.dll");
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
+        // Çizim bağlamını döngü içinde güvenli çağırıyoruz
+        HDC hdc = GetDC(gameWindow);
+        if (!hdc) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
         uintptr_t localPlayerPawn = *(uintptr_t*)(clientModule + Offsets::dwLocalPlayerPawn);
-        if (!localPlayerPawn) continue;
+        if (!localPlayerPawn) {
+            ReleaseDC(gameWindow, hdc);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
 
         int localTeam = *(int*)(localPlayerPawn + ClientDll::m_iTeamNum);
         ViewMatrix viewMatrix = *(ViewMatrix*)(clientModule + Offsets::dwViewMatrix);
         uintptr_t entityList = *(uintptr_t*)(clientModule + Offsets::dwEntityList);
-        if (!entityList) continue;
+        
+        if (entityList) {
+            for (int i = 1; i < 64; i++) {
+                uintptr_t listEntry = *(uintptr_t*)(entityList + ((8 * (i & 0x7FFF) >> 9) + 16));
+                if (!listEntry) continue;
 
-        // Oyuncu Listesini Tara
-        for (int i = 1; i < 64; i++) {
-            uintptr_t listEntry = *(uintptr_t*)(entityList + ((8 * (i & 0x7FFF) >> 9) + 16));
-            if (!listEntry) continue;
+                uintptr_t playerPawn = *(uintptr_t*)(listEntry + 120 * (i & 0x1FF));
+                if (!playerPawn || playerPawn == localPlayerPawn) continue;
 
-            uintptr_t playerPawn = *(uintptr_t*)(listEntry + 120 * (i & 0x1FF));
-            if (!playerPawn || playerPawn == localPlayerPawn) continue;
+                int health = *(int*)(playerPawn + ClientDll::m_iHealth);
+                if (health <= 0 || health > 100) continue;
 
-            int health = *(int*)(playerPawn + ClientDll::m_iHealth);
-            if (health <= 0 || health > 100) continue;
+                int team = *(int*)(playerPawn + ClientDll::m_iTeamNum);
+                if (team == localTeam) continue;
 
-            int team = *(int*)(playerPawn + ClientDll::m_iTeamNum);
-            if (team == localTeam) continue; // Dostları çizme
+                Vector3 feetPos = *(Vector3*)(playerPawn + ClientDll::m_vOldOrigin);
+                uintptr_t gameSceneNode = *(uintptr_t*)(playerPawn + ClientDll::m_pGameSceneNode);
+                if (!gameSceneNode) continue;
+                
+                Vector3 headPos = *(Vector3*)(gameSceneNode + 0x80);
 
-            // Pozisyonları Al
-            Vector3 feetPos = *(Vector3*)(playerPawn + ClientDll::m_vOldOrigin);
-            uintptr_t gameSceneNode = *(uintptr_t*)(playerPawn + ClientDll::m_pGameSceneNode);
-            if (!gameSceneNode) continue;
-            
-            Vector3 headPos = *(Vector3*)(gameSceneNode + 0x80); // GameSceneNode abs origin (Kafa Hizası)
+                Vector3 screenFeet, screenHead;
+                if (WorldToScreen(feetPos, screenFeet, viewMatrix, screenWidth, screenHeight) &&
+                    WorldToScreen(headPos, screenHead, viewMatrix, screenWidth, screenHeight)) {
 
-            Vector3 screenFeet, screenHead;
-            if (WorldToScreen(feetPos, screenFeet, viewMatrix, screenWidth, screenHeight) &&
-                WorldToScreen(headPos, screenHead, viewMatrix, screenWidth, screenHeight)) {
+                    int height = std::abs(static_cast<int>(screenFeet.y - screenHead.y));
+                    int width = height / 2;
+                    int x = static_cast<int>(screenHead.x) - (width / 2);
+                    int y = static_cast<int>(screenHead.y);
 
-                int height = std::abs(static_cast<int>(screenFeet.y - screenHead.y));
-                int width = height / 2;
-                int x = static_cast<int>(screenHead.x) - (width / 2);
-                int y = static_cast<int>(screenHead.y);
-
-                // Düşmanlara Kırmızı Kutu Çiz
-                DrawBorderBox(hdc, x, y, width, height, 2, RGB(255, 0, 0));
+                    DrawBorderBox(hdc, x, y, width, height, 2, RGB(255, 0, 0));
+                }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS Çizim Hızı
+        ReleaseDC(gameWindow, hdc);
+        std::this_thread::sleep_for(std::chrono::milliseconds(8)); // Senkronizasyon iyileştirmesi
     }
 
     std::cout << "[Axion] Kapatiliyor..." << std::endl;
-    ReleaseDC(NULL, hdc);
     if (f) fclose(f);
     FreeConsole();
     FreeLibraryAndExitThread(hModule, 0);
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    if (ul_reason_for_call == SIGNAL_LN_ENTRY_PROCESSING || ul_reason_for_call == DLL_PROCESS_ATTACH) {
+    if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        CloseHandle(CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)CheatThread, hModule, 0, nullptr));
+        HANDLE hThread = CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)CheatLoop, hModule, 0, nullptr);
+        if (hThread) CloseHandle(hThread);
     }
     return TRUE;
 }
