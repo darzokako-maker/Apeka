@@ -1,0 +1,29 @@
+name: Axion CS2 DLL Build System
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Kodlari Depodan Cek
+      uses: actions/checkout@v4
+
+    - name: MSBuild Kurulumu
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Projeyi Derle (Release x64)
+      run: |
+        msbuild Axion.vcxproj /p:Configuration=Release /p:Platform=x64
+
+    - name: DLL Dosyasini Cikti Olarak Yukle
+      uses: actions/upload-artifact@v4
+      with:
+        name: Axion-CS2-ESP-DLL
+        path: x64/Release/Axion.dll
+        
